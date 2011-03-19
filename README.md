@@ -1,0 +1,4 @@
+WhatAPI
+=======
+
+What, Python style.
