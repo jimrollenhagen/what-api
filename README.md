@@ -114,8 +114,9 @@ results: {
   time: 140.5 /* time spent processing request in milliseconds */
   result_count: 1000 /* total results on what.cd */
   results_more: 1 /* indicates if result_count shows with a + sign on the site. site shows 1000+ for pages 1-10, 1500+ for pages 11-20, 2000+ for pages 21-30, etc... n+, where n = 1000 + 500*floor((page-1)/10) */
-  results_showing: [1, 50] /* results returned in this request (for pagination): [first, last] */
-  group_count: 50 /* groups shown on this page */
+  result_first: 1 /* index of first result on page (page_number * 50 - 49) */
+  result_last: 50 /* index of last result on page (result_first + group_count) */
+  group_count: 50 /* groups returned */
   groups: [ 
     /* groups are ordered the same as the results from what.cd */
     {

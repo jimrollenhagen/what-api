@@ -67,44 +67,73 @@ class WhatScraper:
 class WhatTorrentScraper(WhatScraper):
 
   def search(self, searchParams):
-
     baseURL = 'https://ssl.what.cd/torrents.php?'
-    searchParams['action'] = 'advanced'
+    if 'page' not in searchParams:
+      searchParams['page'] = 1
     searchURL = baseURL + urllib.urlencode(searchParams)
     torrentPage = urllib2.urlopen(searchURL)
 
-    return self.parseSearchPage(torrentPage)
+    return self.parseSearchPage(torrentPage, int(searchParams['page']))
 
-  def parseSearchPage(self, torrentPage):
+  def parseSearchPage(self, torrentPage, pagenum):
 
-    pageHTML = html.parse(torrentPage).getroot()
-    data = {}
-    data['groups'] = []
-    data['torrents'] = []
+    pageHTML = html.parse(torrentPage).getroot()    
+    result_count, results_more = self.getCountData(pageHTML)
+    result_first = (pagenum * 50) - 49
 
     # Get the table
     try:
       torrentTable = self.getTorrentTable(pageHTML)
     except KeyError:
-      return []
+      return {}
 
+    groups = []
+    torrents = []
+    groupCount = 0
+    torrentCount = 0
+    groupCurrent = {}
+    editionCurrent = {}
     for tableRow in torrentTable:
       if self.isNotMusic(tableRow):
-        pass
+        groupCount += 1
       elif self.isGroup(tableRow):
-        newGroup = self.produceNewGroup(tableRow)
-        data['groups'].append(newGroup)
+        if groupCount > 0: groups.append(groupCurrent)
+        groupCount += 1
+        groupCurrent = self.produceNewGroup(tableRow)
+        groupCurrent['result'] = groupCount - 1 + result_first
+        groupCurrent['type'] = 'music'
+        groupCurrent['torrent_ids'] = []
       elif self.isEdition(tableRow):
-        newEdition = self.produceNewEdition(tableRow)
-        editionList = data['groups'][-1]['editions']
-        editionList.append(newEdition)
+        editionCurrent = self.produceNewEdition(tableRow)
       else:
-        newFormat = self.produceNewFormat(tableRow)
-        formatList = data['groups'][-1]['editions'][-1]['formats']
-        formatList.append(newFormat['torrentID'])
-        data['torrents'].append(newFormat)
-
+        torrentCount +=1
+        newTorrent = self.produceNewTorrent(tableRow)
+        newTorrent['edition'] = editionCurrent['info']
+        newTorrent['edition_str'] = editionCurrent['info_string']
+        newTorrent['group_id'] = groupCurrent['id']
+        groupCurrent['torrent_ids'].append(newTorrent['id'])
+        torrents.append(newTorrent)
+        
+    groups.append(groupCurrent) # make sure we get the last group
+    result_last = result_first - 1 + groupCount
+    
+    data = {
+      'result_count': result_count,
+      'results_more': results_more,
+      'result_first': result_first,
+      'result_last': result_last,
+      'group_count': groupCount,
+      'groups': groups,
+      'torrent_count': torrentCount,
+      'torrents': torrents
+    }
     return data
+    
+  def getCountData(self, html):
+    result_text = html.get_element_by_id('content').xpath('form/div/div/div/span/text()')[0].strip()
+    results_more = '+' in result_text
+    result_count = int(result_text.split(' ')[0].strip('+').replace(',', ''))
+    return result_count, results_more
 
   def getTorrentTable(self, pageHTML):
     torrentTable = pageHTML.get_element_by_id('torrent_table')
@@ -131,17 +160,17 @@ class WhatTorrentScraper(WhatScraper):
 
     # If the title of the first link is View Torrent then it is VA
     if self.isVA(tableRow):
-      artist = 'Various Artists'
-      artistID = '0'
+      artist_name = 'Various Artists'
+      artist_id = '0'
       # first link has album name and ID
-      album = linktext[0]
-      albumID = urls[0].split('=')[-1]
+      group_name = linktext[0]
+      group_id = urls[0].split('=')[-1]
     else:
       # first link has artist info, second has album info
-      artist = linktext[0]
-      artistID = urls[0].split('=')[-1]
-      album = linktext[1]
-      albumID = urls[1].split('=')[-1]
+      artist_name = linktext[0]
+      artist_id = urls[0].split('=')[-1]
+      group_name = linktext[1]
+      group_id = urls[1].split('=')[-1]
 
     # 3rd td element has year in 3rd from last textnode
     year = tableRow.xpath('td[3]/child::text()')[-3].strip(' \n\t\r[]')
@@ -149,32 +178,56 @@ class WhatTorrentScraper(WhatScraper):
     # 'tags' element has tag links, link text has tags
     tags = tableRow.find_class('tags')[0].xpath('a/text()')
 
-    newGroup['artist'] = artist
-    newGroup['artistID'] = artistID
-    newGroup['album'] = album
-    newGroup['albumID'] = albumID
+    newGroup['artist_name'] = artist_name
+    newGroup['artist_id'] = artist_id
+    newGroup['name'] = group_name
+    newGroup['id'] = group_id
     newGroup['year'] = year
     newGroup['tags'] = tags
-    newGroup['editions'] = []
 
     return newGroup
 
   def produceNewEdition(self, tableRow):
     newEdition = {}
-    editionInfo = tableRow.find_class('edition_info')[0].xpath('strong/text()')[0]
-    newEdition['edition_info'] = editionInfo
-    newEdition['formats'] = []
+    editionStr = tableRow.find_class('edition_info')[0].xpath('strong/text()')[0]
+    newEdition['info_string'] = editionStr
+
+    info_regex = re.compile(r'(?:(\d{4})(?: - |)|)((?:.* /.*|Original Release(?: /|)))')
+    try:
+      yearStr, infoStr = info_regex.findall(editionStr)[0]
+    except IndexError:
+      print 'index error with string %s' % editionStr
+      yearStr, infoStr = ('', '')
+    if yearStr != '':
+      year = int(yearStr)
+    else:
+      year = 0
+    info = infoStr.split(' / ')
+    if len(info) == 3:
+      if info[0] == 'Original Release':
+        title, label, cat = info
+      else:
+        label, cat, title = info
+    else:
+      if 'Original Release' in info:
+        title, label, cat = ('Original Release', '', '')
+      else:
+        title, label, cat = ('', '', '')
+    
+    newEdition['info'] = { 'year': year,
+      'title': title,
+      'label': label,
+      'cat_number': cat}
     return newEdition
 
-  def produceNewFormat(self, tableRow):
+  def produceNewTorrent(self, tableRow):
     newFormat = {}
 
     # here I just have the xpath that points directly to each bit of torrentData
-    newFormat['quality'] = tableRow.xpath('td[1]/a[1]/text()')[0]
-    newFormat['torrentID'] = tableRow.xpath('td[1]/a[1]/@href')[0].split('=')[-1]
+    newFormat['id'] = tableRow.xpath('td[1]/a[1]/@href')[0].split('=')[-1]
     newFormat['files'] = tableRow.xpath('td[2]/text()')[0]
-    newFormat['uploaded'] = tableRow.xpath('td[3]/span[1]/text()')[0]
     newFormat['size'] = tableRow.xpath('td[4]/text()')[0]
+    
     try:
       newFormat['snatches'] = tableRow.xpath('td[5]/text()')[0]
     except IndexError:
@@ -187,6 +240,9 @@ class WhatTorrentScraper(WhatScraper):
       newFormat['leechers'] = tableRow.xpath('td[7]/text()')[0]
     except IndexError:
       newFormat['leechers'] = 0
+    
+    newFormat['quality'] = tableRow.xpath('td[1]/a[1]/text()')[0]
+    newFormat['uploaded'] = tableRow.xpath('td[3]/span[1]/text()')[0]
 
     return newFormat
 

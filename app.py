@@ -8,7 +8,7 @@ from twisted.internet import defer, reactor
 
 from config import Config as c
 from amazon import AmazonLookup
-from WhatCD import *
+from whatcd import *
 
 class IndexHandler(cyclone.web.RequestHandler):
   @defer.inlineCallbacks
